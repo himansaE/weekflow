@@ -1,5 +1,7 @@
 # WeekFlow
+
 ## Weekly Reporting & Team Dashboard
+
 ### Project Scope Document
 
 ---

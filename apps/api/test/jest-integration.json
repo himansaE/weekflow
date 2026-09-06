@@ -1,0 +1,13 @@
+{
+  "preset": "ts-jest",
+  "testEnvironment": "node",
+  "rootDir": "..",
+  "testRegex": "test/.*\\.integration-spec\\.ts$",
+  "moduleNameMapper": {
+    "^@weekflow/shared$": "<rootDir>/../../packages/shared/src/index.ts",
+    "^@weekflow/shared/(.*)$": "<rootDir>/../../packages/shared/src/$1"
+  },
+  "setupFilesAfterEnv": ["<rootDir>/test/setup-integration.ts"],
+  "testTimeout": 30000,
+  "maxWorkers": 1
+}

@@ -1,0 +1,18 @@
+// WeekFlow database schema — specification §13.
+//
+// M1 establishes the datasource and generator only. The fourteen entities, their
+// enums, indexes, CHECK constraints, partial uniques, composite foreign keys and
+// exclusion constraints land in M2 (feat/schema-and-domain-primitives), where a
+// large part of §13 is hand-written SQL because Prisma cannot express it.
+//
+// Prisma 7: the connection URL lives in prisma.config.ts, and the runtime client
+// is constructed with a pg driver adapter.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}

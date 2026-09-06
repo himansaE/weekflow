@@ -1,0 +1,42 @@
+{
+  "name": "weekflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WeekFlow — Weekly Reporting & Team Dashboard",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.12.4",
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "dev:web": "pnpm --filter @weekflow/web dev",
+    "dev:api": "pnpm --filter @weekflow/api start:dev",
+    "build": "pnpm --filter @weekflow/api build && pnpm --filter @weekflow/web build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:integration": "pnpm --filter @weekflow/api test:integration",
+    "db:migrate": "pnpm --filter @weekflow/api db:migrate",
+    "db:deploy": "pnpm --filter @weekflow/api db:deploy",
+    "db:seed": "pnpm --filter @weekflow/api db:seed",
+    "db:studio": "pnpm --filter @weekflow/api db:studio",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2",
+    "typescript": "5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@parcel/watcher",
+      "@prisma/client",
+      "@prisma/engines",
+      "argon2",
+      "esbuild",
+      "prisma",
+      "unrs-resolver"
+    ]
+  }
+}
