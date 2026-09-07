@@ -1,4 +1,6 @@
 import { Global, Module } from '@nestjs/common';
+import { UsersAdminService } from './users.admin.service';
+import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 
 /**
@@ -7,7 +9,8 @@ import { UsersService } from './users.service';
  */
 @Global()
 @Module({
-  providers: [UsersService],
+  controllers: [UsersController],
+  providers: [UsersService, UsersAdminService],
   exports: [UsersService],
 })
 export class UsersModule {}

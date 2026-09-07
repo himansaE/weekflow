@@ -3,6 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
+import { CalendarModule } from './calendar/calendar.module';
 import { validateEnv } from './config/env.schema';
 import { CsrfOriginGuard } from './common/guards/csrf-origin.guard';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
@@ -10,6 +11,7 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ProjectsModule } from './projects/projects.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -21,9 +23,11 @@ import { UsersModule } from './users/users.module';
       validate: validateEnv,
     }),
     PrismaModule,
+    CalendarModule,
     AuditModule,
     UsersModule,
     AuthModule,
+    ProjectsModule,
     HealthModule,
   ],
   providers: [

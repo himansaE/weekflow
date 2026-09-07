@@ -12,6 +12,8 @@ import { TokenService } from './token.service';
 @Module({
   controllers: [AuthController],
   providers: [AuthService, PasswordService, TokenService],
-  exports: [TokenService],
+  // PasswordService is exported because user administration also creates
+  // accounts, and both paths must hash identically.
+  exports: [TokenService, PasswordService],
 })
 export class AuthModule {}
