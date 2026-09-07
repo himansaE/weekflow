@@ -1,7 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": "./src"
+    "rootDir": "./src",
+    // Inside the output directory so `nest build --deleteOutDir` removes it with
+    // the rest. A build-info file that outlives dist makes tsc believe the output
+    // is current and emit nothing at all.
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
   "include": ["src"],
   "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]

@@ -53,7 +53,12 @@ export const envSchema = z
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_ISSUER: z.string().min(1).default('weekflow-api'),
     JWT_AUDIENCE: z.string().min(1).default('weekflow-web'),
-    JWT_EXPIRES_IN: z.string().min(1).default('8h'),
+    // Validated as a duration so the value can be handed to jsonwebtoken, whose
+    // types accept a number of seconds or a `ms`-style string and nothing else.
+    JWT_EXPIRES_IN: z
+      .string()
+      .regex(/^\d+[smhd]$/, 'JWT_EXPIRES_IN must be a duration such as 30m, 8h or 7d')
+      .default('8h'),
 
     AUTH_COOKIE_NAME: z.string().min(1).default('weekflow_session'),
     COOKIE_SECURE: z

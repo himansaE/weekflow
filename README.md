@@ -25,7 +25,7 @@ there is no separate Admin role.
 | Layer      | Technology                                                                                                          |
 | ---------- | ------------------------------------------------------------------------------------------------------------------- |
 | Web        | Next.js 16 (App Router), React 19, Tailwind CSS 4, shadcn/ui, React Hook Form, Zod, TanStack Query, Axios, Recharts |
-| API        | NestJS 12, REST, class-validator/class-transformer, JWT in an HttpOnly cookie, Argon2                               |
+| API        | NestJS 11, REST, class-validator/class-transformer, JWT in an HttpOnly cookie, Argon2id                             |
 | Data       | PostgreSQL, Prisma 7 (pg driver adapter)                                                                            |
 | Tests      | Jest, Supertest, against a real disposable PostgreSQL database                                                      |
 | Workspace  | pnpm workspace monorepo                                                                                             |
@@ -121,7 +121,7 @@ removed. See [`docs/derived-register.md`](docs/derived-register.md) §12.3.
 | ----------------------------------------------------------- | ----------------- |
 | Workspace, env validation, health endpoints, error envelope | Implemented (M1)  |
 | Database schema, calendar and project-eligibility rules     | Implemented (M2)  |
-| Authentication, RBAC, CSRF/origin policy                    | Not started (M3)  |
+| Authentication, RBAC, CSRF/origin policy                    | Implemented (M3)  |
 | User and project administration                             | Not started (M4)  |
 | Weekly report editor and drafts                             | Not started (M5)  |
 | Submission, review and versioning                           | Not started (M6)  |
