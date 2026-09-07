@@ -54,22 +54,33 @@ it. Jest maps it to source, so tests pick changes up without a rebuild.
 
 - Node.js ≥ 22 (developed on 22.17)
 - pnpm ≥ 10 (developed on 10.12.4)
-- A PostgreSQL 16 database, plus a second, disposable database for integration tests
+- PostgreSQL — no separate install needed locally, see below
 
 ## Setup
 
 ```bash
 pnpm install
 
-cp .env.example apps/api/.env          # fill in DATABASE_URL, TEST_DATABASE_URL, JWT_SECRET
+cp .env.example apps/api/.env          # fill in the database URLs and JWT_SECRET
 cp .env.example apps/web/.env.local    # NEXT_PUBLIC_API_BASE_URL is the only key the web app reads
 
-pnpm --filter @weekflow/api db:generate
-pnpm db:migrate
+pnpm db:local                          # starts Prisma's bundled PostgreSQL 17
+pnpm db:migrate                        # applies migrations
 pnpm db:seed                           # requires SEED_DEMO=true and SEED_DEMO_PASSWORD
 
 pnpm dev                               # web on :3000, API on :4000
 ```
+
+`pnpm db:local` runs a real PostgreSQL 17 with no Docker or system install: the
+primary instance on `:51214` and a shadow instance on `:51215`. Create
+`weekflow_dev` and `weekflow_test` on the primary and `weekflow_shadow` on the
+shadow instance, then point the three URLs at them. `pnpm db:local:stop` shuts it
+down; state survives a restart.
+
+Three separate databases are deliberate. `TEST_DATABASE_URL` is truncated by the
+integration suite, which refuses to run if it matches `DATABASE_URL`.
+`SHADOW_DATABASE_URL` is where `prisma migrate dev` replays migration history to
+compute a diff; Prisma refuses (P3025) if it points at the primary database.
 
 The API validates its whole environment at startup and refuses to boot with a field-by-field
 report rather than failing later in a request — including refusing a production start with a
@@ -77,16 +88,17 @@ non-Secure cookie, or `SameSite=None` without `Secure`.
 
 ## Commands
 
-| Command                              | Does                                         |
-| ------------------------------------ | -------------------------------------------- |
-| `pnpm dev`                           | Web and API together                         |
-| `pnpm dev:web` / `pnpm dev:api`      | One at a time                                |
-| `pnpm build`                         | Shared → API → web                           |
-| `pnpm lint` / `pnpm typecheck`       | Across every package                         |
-| `pnpm test`                          | Unit tests                                   |
-| `pnpm test:integration`              | Jest + Supertest against `TEST_DATABASE_URL` |
-| `pnpm db:migrate` / `pnpm db:deploy` | Migrations for development / deployment      |
-| `pnpm db:seed` / `pnpm db:studio`    | Demo data / Prisma Studio                    |
+| Command                                | Does                                         |
+| -------------------------------------- | -------------------------------------------- |
+| `pnpm dev`                             | Web and API together                         |
+| `pnpm dev:web` / `pnpm dev:api`        | One at a time                                |
+| `pnpm build`                           | Shared → API → web                           |
+| `pnpm lint` / `pnpm typecheck`         | Across every package                         |
+| `pnpm test`                            | Unit tests                                   |
+| `pnpm test:integration`                | Jest + Supertest against `TEST_DATABASE_URL` |
+| `pnpm db:local` / `pnpm db:local:stop` | Local PostgreSQL 17, no Docker required      |
+| `pnpm db:migrate` / `pnpm db:deploy`   | Migrations for development / deployment      |
+| `pnpm db:seed` / `pnpm db:studio`      | Demo data / Prisma Studio                    |
 
 `pnpm test:integration` refuses to run unless `TEST_DATABASE_URL` is set **and differs from**
 `DATABASE_URL` — the suite truncates its database.
@@ -108,7 +120,7 @@ removed. See [`docs/derived-register.md`](docs/derived-register.md) §12.3.
 | Area                                                        | Status            |
 | ----------------------------------------------------------- | ----------------- |
 | Workspace, env validation, health endpoints, error envelope | Implemented (M1)  |
-| Database schema, calendar and project-eligibility rules     | Not started (M2)  |
+| Database schema, calendar and project-eligibility rules     | Implemented (M2)  |
 | Authentication, RBAC, CSRF/origin policy                    | Not started (M3)  |
 | User and project administration                             | Not started (M4)  |
 | Weekly report editor and drafts                             | Not started (M5)  |

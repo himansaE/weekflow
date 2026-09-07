@@ -74,10 +74,7 @@ async function bootstrap(): Promise<void> {
   app.use(notFoundHandler);
 
   await app.listen(port, '0.0.0.0');
-  Logger.log(
-    `WeekFlow API listening on port ${port} (${nodeEnv})`,
-    'Bootstrap',
-  );
+  Logger.log(`WeekFlow API listening on port ${port} (${nodeEnv})`, 'Bootstrap');
 }
 
 void bootstrap();

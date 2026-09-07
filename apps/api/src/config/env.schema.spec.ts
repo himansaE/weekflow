@@ -22,15 +22,11 @@ describe('validateEnv (§19.2)', () => {
   });
 
   it('rejects a short JWT secret', () => {
-    expect(() => validateEnv({ ...base, JWT_SECRET: 'too-short' })).toThrow(
-      /JWT_SECRET/,
-    );
+    expect(() => validateEnv({ ...base, JWT_SECRET: 'too-short' })).toThrow(/JWT_SECRET/);
   });
 
   it('rejects an unknown time zone', () => {
-    expect(() =>
-      validateEnv({ ...base, APP_TIMEZONE: 'Mars/Olympus' }),
-    ).toThrow(/APP_TIMEZONE/);
+    expect(() => validateEnv({ ...base, APP_TIMEZONE: 'Mars/Olympus' })).toThrow(/APP_TIMEZONE/);
   });
 
   it('refuses to start production with a non-Secure cookie', () => {
@@ -69,14 +65,9 @@ describe('validateEnv (§19.2)', () => {
     ['a trailing slash', 'http://localhost:3000/'],
     ['a path', 'http://localhost:3000/api'],
     ['a wildcard', 'https://*.vercel.app'],
-  ])(
-    'rejects a CORS origin with %s — it can never match an Origin header',
-    (_label, origin) => {
-      expect(() => validateEnv({ ...base, CORS_ORIGINS: origin })).toThrow(
-        /CORS_ORIGINS/,
-      );
-    },
-  );
+  ])('rejects a CORS origin with %s — it can never match an Origin header', (_label, origin) => {
+    expect(() => validateEnv({ ...base, CORS_ORIGINS: origin })).toThrow(/CORS_ORIGINS/);
+  });
 
   it('parses a comma-separated origin allowlist', () => {
     const env = validateEnv({
@@ -84,16 +75,11 @@ describe('validateEnv (§19.2)', () => {
       CORS_ORIGINS: 'http://localhost:3000, http://127.0.0.1:3000',
     });
 
-    expect(env.CORS_ORIGINS).toEqual([
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-    ]);
+    expect(env.CORS_ORIGINS).toEqual(['http://localhost:3000', 'http://127.0.0.1:3000']);
   });
 
   it('requires a demo password when the seed guard is enabled (§17.5)', () => {
-    expect(() => validateEnv({ ...base, SEED_DEMO: 'true' })).toThrow(
-      /SEED_DEMO_PASSWORD/,
-    );
+    expect(() => validateEnv({ ...base, SEED_DEMO: 'true' })).toThrow(/SEED_DEMO_PASSWORD/);
   });
 
   it('never echoes a rejected secret value in the error message', () => {

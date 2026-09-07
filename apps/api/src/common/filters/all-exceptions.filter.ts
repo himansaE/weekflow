@@ -36,18 +36,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
         exception instanceof Error ? exception.stack : String(exception),
       );
     } else {
-      this.logger.debug(
-        `${request.method} ${request.url} → ${status} [${requestId}]`,
-      );
+      this.logger.debug(`${request.method} ${request.url} → ${status} [${requestId}]`);
     }
 
     response.status(status).json(body);
   }
 
-  private describe(
-    exception: unknown,
-    requestId: string,
-  ): { status: HttpStatus; body: ApiError } {
+  private describe(exception: unknown, requestId: string): { status: HttpStatus; body: ApiError } {
     if (exception instanceof ApiException) {
       return {
         status: exception.getStatus(),
@@ -55,9 +50,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
           error: {
             code: exception.code,
             message: exception.message,
-            ...(exception.fieldErrors?.length
-              ? { fieldErrors: exception.fieldErrors }
-              : {}),
+            ...(exception.fieldErrors?.length ? { fieldErrors: exception.fieldErrors } : {}),
             requestId,
           },
         },
