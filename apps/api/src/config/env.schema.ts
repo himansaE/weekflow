@@ -25,17 +25,9 @@ const csvOrigins = z
             const url = new URL(origin);
             // An origin is scheme + host + port. A path, query or trailing slash
             // means the allowlist entry can never match a real Origin header.
-            return (
-              url.pathname === '/' &&
-              !url.search &&
-              !url.hash &&
-              !origin.endsWith('/')
-            );
+            return url.pathname === '/' && !url.search && !url.hash && !origin.endsWith('/');
           }, 'CORS_ORIGINS entries must be bare origins with no path, query or trailing slash')
-          .refine(
-            (origin) => !origin.includes('*'),
-            'CORS_ORIGINS must not contain wildcards',
-          ),
+          .refine((origin) => !origin.includes('*'), 'CORS_ORIGINS must not contain wildcards'),
       )
       .min(1, 'At least one allowed origin is required'),
   );
@@ -51,13 +43,9 @@ const isIanaTimeZone = (value: string): boolean => {
 
 export const envSchema = z
   .object({
-    NODE_ENV: z
-      .enum(['development', 'test', 'production'])
-      .default('development'),
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().min(1).max(65535).default(4000),
-    LOG_LEVEL: z
-      .enum(['error', 'warn', 'info', 'debug', 'verbose'])
-      .default('info'),
+    LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug', 'verbose']).default('info'),
 
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
     DIRECT_URL: z.string().min(1).optional(),
@@ -96,8 +84,7 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['COOKIE_SECURE'],
-        message:
-          'COOKIE_SECURE must be true in production — the session cookie requires HTTPS',
+        message: 'COOKIE_SECURE must be true in production — the session cookie requires HTTPS',
       });
     }
 
@@ -105,15 +92,12 @@ export const envSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['COOKIE_SAME_SITE'],
-        message:
-          'SameSite=None requires COOKIE_SECURE=true; browsers reject the cookie otherwise',
+        message: 'SameSite=None requires COOKIE_SECURE=true; browsers reject the cookie otherwise',
       });
     }
 
     if (env.NODE_ENV === 'production') {
-      const insecureOrigin = env.CORS_ORIGINS.find((origin) =>
-        origin.startsWith('http://'),
-      );
+      const insecureOrigin = env.CORS_ORIGINS.find((origin) => origin.startsWith('http://'));
       if (insecureOrigin) {
         ctx.addIssue({
           code: 'custom',
@@ -139,9 +123,7 @@ export function validateEnv(raw: Record<string, unknown>): Env {
 
   if (!result.success) {
     const details = result.error.issues
-      .map(
-        (issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`,
-      )
+      .map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`)
       .join('\n');
     // Never echo the offending values — some of them are secrets.
     throw new Error(`Invalid environment configuration:\n${details}`);

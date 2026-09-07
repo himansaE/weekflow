@@ -22,7 +22,9 @@
     "db:deploy": "prisma migrate deploy",
     "db:reset": "prisma migrate reset",
     "db:seed": "prisma db seed",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:local": "prisma dev -n weekflow --db-port 51213",
+    "db:local:stop": "prisma dev stop weekflow"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

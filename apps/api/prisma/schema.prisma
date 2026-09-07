@@ -1,18 +1,421 @@
 // WeekFlow database schema — specification §13.
 //
-// M1 establishes the datasource and generator only. The fourteen entities, their
-// enums, indexes, CHECK constraints, partial uniques, composite foreign keys and
-// exclusion constraints land in M2 (feat/schema-and-domain-primitives), where a
-// large part of §13 is hand-written SQL because Prisma cannot express it.
+// Prisma 7: the connection URL lives in prisma.config.ts and the runtime client
+// is constructed with a pg driver adapter (see PrismaService).
 //
-// Prisma 7: the connection URL lives in prisma.config.ts, and the runtime client
-// is constructed with a pg driver adapter.
+// Several §13 guarantees cannot be expressed here and live in hand-written SQL
+// inside the migration instead — CHECK constraints, the same-report composite
+// foreign keys for the version pointers, the interval exclusion constraints, and
+// the submitted-version immutability triggers. Partial unique indexes ARE
+// expressible from Prisma 7.4 onward via `where: raw(...)`, so they stay here.
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  // Partial unique indexes carry four §13 invariants: one open assignment per
+  // member/project, one open activity period per project, one editable version
+  // per report, and one key issue / key achievement per version.
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums (§13.2)
+//
+// SubmissionState is deliberately absent: it is derived at read time from
+// firstSubmittedAt, the deadline and `asOf`, never stored (§4.2).
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  TEAM_MEMBER
+  MANAGER
+}
+
+enum ReportStatus {
+  DRAFT
+  SUBMITTED
+  NEEDS_CORRECTION
+  APPROVED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum TaskStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+  BLOCKED
+}
+
+enum BlockerStatus {
+  OPEN
+  RESOLVED
+}
+
+enum TimeCategory {
+  DEVELOPMENT
+  TESTING
+  MEETING
+  DOCUMENTATION
+  OTHER
+}
+
+enum ReviewAction {
+  APPROVE
+  REQUEST_CHANGES
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity, projects and intervals (§13.3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  fullName     String   @db.VarChar(120)
+  /// Stored trimmed and lowercased; unique across active AND inactive users so
+  /// deactivation never releases an identity (§13.3).
+  email        String   @unique @db.VarChar(254)
+  passwordHash String
+  role         Role     @default(TEAM_MEMBER)
+  isActive     Boolean  @default(true)
+  /// Optimistic concurrency token for administration commands (§16.2).
+  revision     Int      @default(0)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  reports          Report[]
+  projectMembers   ProjectMember[]
+  reviewsAuthored  Review[]
+  auditEntries     AuditLog[]
+
+  /// Backs the expected-member cohort query (§4.3).
+  @@index([role, isActive, createdAt])
+}
+
+model Project {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(120)
+  description String?
+  /// Current state only. The queryable history is ProjectActivityPeriod, which
+  /// is what eligibility actually reads (§5.2).
+  isActive    Boolean  @default(true)
+  revision    Int      @default(0)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  members         ProjectMember[]
+  activityPeriods ProjectActivityPeriod[]
+  reportTasks     ReportTask[]
+  nextWeekTasks   NextWeekTask[]
+  blockers        Blocker[]
+  achievements    Achievement[]
+  timeEntries     TimeEntry[]
+
+  /// Case-insensitive uniqueness is added as a functional index in SQL; this
+  /// plain index serves the management list's search and ordering (§15.4).
+  @@index([isActive, name, id])
+}
+
+/// One assignment period. Never deleted — removal closes `endedAt` so historical
+/// weeks stay reportable (§5.3).
+model ProjectMember {
+  id         String    @id @default(uuid()) @db.Uuid
+  projectId  String    @db.Uuid
+  userId     String    @db.Uuid
+  assignedAt DateTime  @db.Timestamptz(3)
+  endedAt    DateTime? @db.Timestamptz(3)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  /// At most one OPEN assignment per member/project pair. This does not prevent
+  /// overlapping CLOSED rows — an exclusion constraint in SQL does that (§13.3).
+  @@unique([projectId, userId], where: raw("\"endedAt\" IS NULL"), map: "ProjectMember_open_unique")
+  @@index([userId, projectId, assignedAt, endedAt])
+  @@index([projectId, endedAt, userId])
+}
+
+/// One stretch during which the project was active. Archiving closes the open
+/// period; reactivating opens a NEW one — old periods are never rewritten (§5.3).
+model ProjectActivityPeriod {
+  id        String    @id @default(uuid()) @db.Uuid
+  projectId String    @db.Uuid
+  startedAt DateTime  @db.Timestamptz(3)
+  endedAt   DateTime? @db.Timestamptz(3)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId], where: raw("\"endedAt\" IS NULL"), map: "ProjectActivityPeriod_open_unique")
+  @@index([projectId, startedAt, endedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Report and version aggregates (§13.4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Report {
+  id String @id @default(uuid()) @db.Uuid
+
+  userId String @db.Uuid
+  /// Calendar date in the reporting timezone, always a Monday (§4.1). A DATE, not
+  /// an instant: which week a report belongs to must not depend on server locale.
+  weekStart DateTime @db.Date
+
+  /// Resolved at creation and then frozen, so a later configuration change cannot
+  /// silently move an existing report's deadline (§4.4).
+  reportingTimezone String   @db.VarChar(64)
+  deadlineAt        DateTime @db.Timestamptz(3)
+
+  status ReportStatus @default(DRAFT)
+  /// Set exactly once, on the very first submission. Sole input to on-time vs
+  /// late — a later correction never changes it (§4.2, §7.2).
+  firstSubmittedAt DateTime? @db.Timestamptz(3)
+
+  /// The version the owner is looking at: V1 while drafting, the submitted
+  /// version once submitted or approved, or the new editable clone during a
+  /// correction cycle (§7.2).
+  currentVersionId String? @unique @db.Uuid
+  /// Stays on Vn while Vn+1 is being corrected — this is what managers see (§7.4).
+  latestSubmittedVersionId String? @unique @db.Uuid
+
+  revision  Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  versions ReportVersion[] @relation("ReportVersions")
+
+  // Plain FKs give Prisma navigation. The migration adds composite FKs on
+  // (id, currentVersionId) → ReportVersion(reportId, id) as well, so a report can
+  // never point at another report's version (§13.4).
+  currentVersion ReportVersion? @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  latestSubmittedVersion ReportVersion? @relation("LatestSubmittedVersion", fields: [latestSubmittedVersionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  reviews      Review[]
+  auditEntries AuditLog[]
+
+  /// One report per member per week — the database half of REPORT02 (§16.2).
+  @@unique([userId, weekStart])
+  @@index([weekStart, status, userId])
+  @@index([userId, weekStart(sort: Desc), id])
+  @@index([weekStart, firstSubmittedAt])
+}
+
+model ReportVersion {
+  id            String @id @default(uuid()) @db.Uuid
+  reportId      String @db.Uuid
+  versionNumber Int
+
+  notes String?
+  /// Null means editable. Once set the version is immutable, enforced by the
+  /// write service and by triggers added in the migration (§13.4).
+  submittedAt DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  report Report @relation("ReportVersions", fields: [reportId], references: [id], onDelete: Restrict)
+
+  currentOf         Report? @relation("CurrentVersion")
+  latestSubmittedOf Report? @relation("LatestSubmittedVersion")
+
+  tasks         ReportTask[]
+  nextWeekTasks NextWeekTask[]
+  blockers      Blocker[]
+  achievements  Achievement[]
+  timeEntries   TimeEntry[]
+  links         ReportLink[]
+  review        Review?
+  auditEntries  AuditLog[]
+
+  @@unique([reportId, versionNumber])
+  /// Target for the same-report composite foreign keys added in the migration.
+  @@unique([reportId, id])
+  /// At most one editable version per report (§7.2 invariant 3).
+  @@unique([reportId], where: raw("\"submittedAt\" IS NULL"), map: "ReportVersion_editable_unique")
+  @@index([reportId, submittedAt, versionNumber])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Version-owned content (§13.5)
+//
+// Every child hangs off ReportVersion, not Report — that is what makes cloning a
+// correction a pure copy, and what keeps a draft edit from touching history.
+// Columns needed only at submission are nullable so incomplete drafts can be
+// saved; strict submit validation upgrades the contract (§6.8).
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ReportTask {
+  id              String @id @default(uuid()) @db.Uuid
+  reportVersionId String @db.Uuid
+  position        Int
+
+  taskName       String?     @db.VarChar(200)
+  projectId      String?     @db.Uuid
+  priority       Priority?
+  plannedPercent Int?
+  actualPercent  Int?
+  status         TaskStatus?
+  plannedMinutes Int?
+  actualMinutes  Int?
+  deliverable    String?
+
+  reportVersion ReportVersion @relation(fields: [reportVersionId], references: [id], onDelete: Cascade)
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([reportVersionId, position])
+  @@index([reportVersionId, status])
+  @@index([projectId, reportVersionId])
+}
+
+model NextWeekTask {
+  id              String @id @default(uuid()) @db.Uuid
+  reportVersionId String @db.Uuid
+  position        Int
+
+  taskName  String?   @db.VarChar(200)
+  projectId String?   @db.Uuid
+  priority  Priority?
+
+  reportVersion ReportVersion @relation(fields: [reportVersionId], references: [id], onDelete: Cascade)
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([reportVersionId, position])
+  @@index([projectId, reportVersionId])
+}
+
+model Blocker {
+  id              String @id @default(uuid()) @db.Uuid
+  reportVersionId String @db.Uuid
+  position        Int
+
+  description String?
+  /// Null means a general, team-wide blocker rather than a project one (§6.4).
+  projectId  String?        @db.Uuid
+  status     BlockerStatus?
+  isKeyIssue Boolean        @default(false)
+
+  reportVersion ReportVersion @relation(fields: [reportVersionId], references: [id], onDelete: Cascade)
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([reportVersionId, position])
+  /// Zero or one Key Issue per version (§6.4).
+  @@unique([reportVersionId], where: raw("\"isKeyIssue\" = true"), map: "Blocker_key_issue_unique")
+  @@index([reportVersionId, status])
+  @@index([projectId, reportVersionId])
+}
+
+model Achievement {
+  id              String @id @default(uuid()) @db.Uuid
+  reportVersionId String @db.Uuid
+  position        Int
+
+  description       String?
+  projectId         String? @db.Uuid
+  isKeyAchievement  Boolean @default(false)
+
+  reportVersion ReportVersion @relation(fields: [reportVersionId], references: [id], onDelete: Cascade)
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([reportVersionId, position])
+  @@unique([reportVersionId], where: raw("\"isKeyAchievement\" = true"), map: "Achievement_key_unique")
+  @@index([projectId, reportVersionId])
+}
+
+model TimeEntry {
+  id              String @id @default(uuid()) @db.Uuid
+  reportVersionId String @db.Uuid
+  position        Int
+
+  category TimeCategory?
+  /// Always minutes; hours/minutes is a display concern only (§6.6).
+  minutes   Int?
+  projectId String? @db.Uuid
+
+  reportVersion ReportVersion @relation(fields: [reportVersionId], references: [id], onDelete: Cascade)
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@unique([reportVersionId, position])
+  @@index([reportVersionId, category])
+  @@index([projectId, reportVersionId])
+}
+
+model ReportLink {
+  id              String @id @default(uuid()) @db.Uuid
+  reportVersionId String @db.Uuid
+  position        Int
+
+  label String? @db.VarChar(120)
+  url   String? @db.VarChar(2048)
+
+  reportVersion ReportVersion @relation(fields: [reportVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([reportVersionId, position])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reviews and audit (§13.6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Review {
+  id String @id @default(uuid()) @db.Uuid
+
+  reportId String @db.Uuid
+  /// A review always names the exact version it judged, so the timeline stays
+  /// truthful across correction cycles (§7.2 invariant 8).
+  reportVersionId String @unique @db.Uuid
+  reviewerId      String @db.Uuid
+
+  action  ReviewAction
+  /// Required and non-blank for REQUEST_CHANGES; optional for APPROVE (§7.5).
+  comment String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  report        Report        @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  reportVersion ReportVersion @relation(fields: [reportVersionId], references: [id], onDelete: Restrict)
+  reviewer      User          @relation(fields: [reviewerId], references: [id], onDelete: Restrict)
+
+  @@index([reportId, createdAt, id])
+  @@index([reviewerId, createdAt])
+}
+
+/// Append-only business-event history. Content history lives in ReportVersion —
+/// audit metadata never carries report content, passwords, tokens or cookies (§14).
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Null only for controlled system/seed events, never for an unknown actor.
+  actorUserId String? @db.Uuid
+
+  action String @db.VarChar(64)
+  /// Polymorphic — deliberately NOT a foreign key to every table (§13.6).
+  entityType String @db.VarChar(40)
+  entityId   String @db.Uuid
+
+  /// Explicit relations for report events, so the manager feed can filter by week
+  /// without interpreting entityId.
+  reportId        String? @db.Uuid
+  reportVersionId String? @db.Uuid
+
+  metadata Json?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  actor         User?          @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  report        Report?        @relation(fields: [reportId], references: [id], onDelete: Restrict)
+  reportVersion ReportVersion? @relation(fields: [reportVersionId], references: [id], onDelete: Restrict)
+
+  /// Stable reverse-chronological pagination (§14).
+  @@index([createdAt(sort: Desc), id])
+  @@index([reportId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId, createdAt])
 }

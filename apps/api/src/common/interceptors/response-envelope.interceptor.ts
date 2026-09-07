@@ -1,9 +1,4 @@
-import {
-  CallHandler,
-  ExecutionContext,
-  Injectable,
-  NestInterceptor,
-} from '@nestjs/common';
+import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
 import { Observable, map } from 'rxjs';
 
 /**
@@ -22,11 +17,7 @@ export class ResponseEnvelopeInterceptor implements NestInterceptor {
         if (payload === undefined || payload === null) return payload;
 
         // Already enveloped by the handler (list results, or results with context).
-        if (
-          typeof payload === 'object' &&
-          payload !== null &&
-          'data' in payload
-        ) {
+        if (typeof payload === 'object' && payload !== null && 'data' in payload) {
           return payload;
         }
 

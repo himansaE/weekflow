@@ -29,9 +29,28 @@ pnpm lint             # all packages
 pnpm typecheck
 pnpm test             # unit
 pnpm test:integration # Jest + Supertest against TEST_DATABASE_URL (real Postgres)
+pnpm db:local         # Prisma's bundled PostgreSQL 17: primary :51214, shadow :51215
 pnpm db:migrate       # prisma migrate dev
 pnpm db:seed          # guarded by SEED_DEMO=true
 ```
+
+## Database changes
+
+**Never hand-write a migration or hand-create a migration directory.** The CLI owns
+migration naming, timestamps and checksum bookkeeping:
+
+- Schema-derived change → `pnpm --filter @weekflow/api exec prisma migrate dev --name <name>`
+- Custom SQL (CHECK, exclusion constraints, triggers, composite FKs) →
+  `prisma migrate dev --create-only --name <name>`, write the SQL into the file the CLI
+  produced, then apply it. This is Prisma's documented workflow, not a workaround.
+
+`prisma migrate dev` needs `SHADOW_DATABASE_URL` pointed at a _third_ database — the local
+server's auto-created shadow collides on this platform. `migrate dev` also prompts, so in a
+non-interactive shell apply with `prisma migrate deploy`.
+
+Triggers raise with plpgsql's default SQLSTATE (P0001) on purpose. Setting `ERRCODE` to a
+constraint class makes Prisma report a generic "Foreign key constraint violated" and discard
+the message, so no caller or test could tell which rule refused.
 
 `packages/shared` is a built package: run `pnpm --filter @weekflow/shared build` (or `pnpm build`) after changing it. Jest maps it to source, so tests see changes without a rebuild.
 

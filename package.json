@@ -22,7 +22,9 @@
     "db:seed": "pnpm --filter @weekflow/api db:seed",
     "db:studio": "pnpm --filter @weekflow/api db:studio",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
-    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\""
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
+    "db:local": "pnpm --filter @weekflow/api db:local",
+    "db:local:stop": "pnpm --filter @weekflow/api db:local:stop"
   },
   "devDependencies": {
     "prettier": "^3.6.2",

@@ -16,9 +16,7 @@ export class HealthController {
   }
 
   @Get('ready')
-  async ready(
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<{ status: string }> {
+  async ready(@Res({ passthrough: true }) res: Response): Promise<{ status: string }> {
     const databaseReady = await this.prisma.isReachable();
 
     if (!databaseReady) {
