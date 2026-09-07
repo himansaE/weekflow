@@ -62,8 +62,11 @@ the message, so no caller or test could tell which rule refused.
 
 ## Pinned versions and why
 
-- **TypeScript 5.9.3** — ts-jest supports `>=4.3 <7` and typescript-eslint `<6.1.0`; no stable TS 6 is published yet. `@nestjs/schematics` warns it wants `>=6`; that only affects `nest generate`, which this repo does not use.
+- **NestJS 11, not 12.** Nest 12 is ESM-only (`"type": "module"` across common/core/platform-express/testing). The app still _runs_ as CJS because Node 22 can `require()` ESM, but **Jest 30 cannot until Node 24.9**, so no integration test could load the framework. Nest 11 is CommonJS and restores the Jest + Supertest stack the spec pins as Confirmed (§11.1, §18). It also has a plugin ecosystem that supports it — `@nestjs/throttler` still caps at Nest 11.
+- **TypeScript 5.9.3** — ts-jest supports `>=4.3 <7` and typescript-eslint `<6.1.0`; no stable TS 6 is published yet.
 - **ESLint 9** — `eslint-config-next`'s plugins do not accept ESLint 10.
 - **Prisma 7.10.0** — the `latest` dist-tag is an 8.0.0 release candidate; 7.10.0 is the stable `prev`.
-- The API is **CommonJS + Jest**, not the Nest 12 default of ESM + Vitest: the spec pins Jest + Supertest (§11.1, §18), and CJS avoids ESM friction with Prisma, argon2 and ts-jest.
-- `@nestjs/throttler` supports Nest ≤11 only — auth rate limiting (§12.2) is settled in M3 without it.
+- **`jsonwebtoken` directly, not `@nestjs/jwt`** — v12 of the wrapper is ESM-only, and it is a thin layer over this same library. `TokenService` supplies the dependency injection it would have.
+- **Rate limiting is hand-rolled** (`RateLimitGuard`) rather than `@nestjs/throttler`: an in-process fixed window, so counters are per-instance and reset on restart. Stated as a limit, not hidden.
+- **shadcn/ui `base-nova` uses Base UI, not Radix** — compose with `render={<Component />}`, never Radix's `asChild`.
+- `tsBuildInfoFile` lives inside `dist/`. A build-info file that outlives the output directory makes `tsc` believe the build is current and emit **nothing**.
