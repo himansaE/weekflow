@@ -12,6 +12,7 @@ import { RolesGuard } from './common/guards/roles.guard';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProjectsModule } from './projects/projects.module';
+import { ReportsModule } from './reports/reports.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -28,6 +29,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     AuthModule,
     ProjectsModule,
+    ReportsModule,
     HealthModule,
   ],
   providers: [
