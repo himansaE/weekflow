@@ -123,7 +123,7 @@ removed. See [`docs/derived-register.md`](docs/derived-register.md) §12.3.
 | Database schema, calendar and project-eligibility rules     | Implemented (M2)  |
 | Authentication, RBAC, CSRF/origin policy                    | Implemented (M3)  |
 | User and project administration                             | Implemented (M4)  |
-| Weekly report editor and drafts                             | Not started (M5)  |
+| Weekly report editor and drafts                             | Implemented (M5)  |
 | Submission, review and versioning                           | Not started (M6)  |
 | Report pages and operational lists                          | Not started (M7)  |
 | Dashboards and analytics                                    | Not started (M8)  |
