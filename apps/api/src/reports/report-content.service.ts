@@ -119,12 +119,20 @@ export class ReportContentService {
     tx: Prisma.TransactionClient,
     versionId: string,
     content: ReportContentInput,
+    options: { fresh?: boolean } = {},
   ): Promise<void> {
-    await this.assertIdsBelongToVersion(tx, versionId, content);
+    // `fresh` means the version was created moments ago in this same transaction,
+    // so it owns no rows: every delete and position-offset query would be a
+    // guaranteed no-op. Skipping them removes a dozen round trips from the create
+    // path, which matters because the whole aggregate write must fit inside one
+    // transaction (§16.1).
+    const fresh = options.fresh ?? false;
+
+    await this.assertIdsBelongToVersion(tx, versionId, content, fresh);
 
     await tx.reportVersion.update({ where: { id: versionId }, data: { notes: content.notes } });
 
-    await this.reconcile(tx, versionId, 'reportTask', content.tasks, (row) => ({
+    await this.reconcileWithFresh(tx, versionId, 'reportTask', fresh, content.tasks, (row) => ({
       taskName: row.taskName ?? null,
       projectId: row.projectId ?? null,
       priority: row.priority ?? null,
@@ -136,48 +144,81 @@ export class ReportContentService {
       deliverable: row.deliverable ?? null,
     }));
 
-    await this.reconcile(tx, versionId, 'nextWeekTask', content.nextWeekTasks, (row) => ({
-      taskName: row.taskName ?? null,
-      projectId: row.projectId ?? null,
-      priority: row.priority ?? null,
-    }));
+    await this.reconcileWithFresh(
+      tx,
+      versionId,
+      'nextWeekTask',
+      fresh,
+      content.nextWeekTasks,
+      (row) => ({
+        taskName: row.taskName ?? null,
+        projectId: row.projectId ?? null,
+        priority: row.priority ?? null,
+      }),
+    );
 
     // Key flags are cleared first so the partial unique index cannot trip while
     // the old key row and the new one briefly both claim the flag (§16.3).
-    await tx.blocker.updateMany({
-      where: { reportVersionId: versionId },
-      data: { isKeyIssue: false },
-    });
-    await this.reconcile(tx, versionId, 'blocker', content.blockers, (row) => ({
+    // Unnecessary on a fresh version — there is nothing to clear.
+    if (!fresh) {
+      await tx.blocker.updateMany({
+        where: { reportVersionId: versionId },
+        data: { isKeyIssue: false },
+      });
+    }
+    await this.reconcileWithFresh(tx, versionId, 'blocker', fresh, content.blockers, (row) => ({
       description: row.description ?? null,
       projectId: row.projectId ?? null,
       status: row.status ?? null,
       isKeyIssue: row.isKeyIssue ?? false,
     }));
 
-    await tx.achievement.updateMany({
-      where: { reportVersionId: versionId },
-      data: { isKeyAchievement: false },
-    });
-    await this.reconcile(tx, versionId, 'achievement', content.achievements, (row) => ({
-      description: row.description ?? null,
-      projectId: row.projectId ?? null,
-      isKeyAchievement: row.isKeyAchievement ?? false,
-    }));
+    if (!fresh) {
+      await tx.achievement.updateMany({
+        where: { reportVersionId: versionId },
+        data: { isKeyAchievement: false },
+      });
+    }
+    await this.reconcileWithFresh(
+      tx,
+      versionId,
+      'achievement',
+      fresh,
+      content.achievements,
+      (row) => ({
+        description: row.description ?? null,
+        projectId: row.projectId ?? null,
+        isKeyAchievement: row.isKeyAchievement ?? false,
+      }),
+    );
 
-    await this.reconcile(tx, versionId, 'timeEntry', content.timeEntries, (row) => ({
-      category: row.category ?? null,
-      minutes: row.minutes ?? null,
-      projectId: row.projectId ?? null,
-    }));
+    await this.reconcileWithFresh(
+      tx,
+      versionId,
+      'timeEntry',
+      fresh,
+      content.timeEntries,
+      (row) => ({
+        category: row.category ?? null,
+        minutes: row.minutes ?? null,
+        projectId: row.projectId ?? null,
+      }),
+    );
 
-    await this.reconcile(tx, versionId, 'reportLink', content.links, (row) => ({
+    await this.reconcileWithFresh(tx, versionId, 'reportLink', fresh, content.links, (row) => ({
       label: row.label ?? null,
       url: row.url ?? null,
     }));
   }
 
-  /** Deep-copies one version's content into another. Used by the M6 clone. */
+  /**
+   * Deep-copies one version's content into another — the correction clone (§7.3).
+   *
+   * Every child gets a NEW id: a submitted row must never be attached to two
+   * versions or moved into the clone. Inserts are batched per collection so the
+   * whole clone costs six statements rather than one per row, which keeps a large
+   * report inside the transaction budget.
+   */
   async copyInto(
     tx: Prisma.TransactionClient,
     sourceVersionId: string,
@@ -191,13 +232,12 @@ export class ReportContentService {
       data: { notes: content.notes },
     });
 
-    // Every child gets a NEW id — a submitted row must never be attached to two
-    // versions or moved into the clone (§7.3).
-    for (const [index, row] of content.tasks.entries()) {
-      await tx.reportTask.create({
-        data: {
-          reportVersionId: targetVersionId,
-          position: index,
+    const link = (index: number) => ({ reportVersionId: targetVersionId, position: index });
+
+    if (content.tasks.length > 0) {
+      await tx.reportTask.createMany({
+        data: content.tasks.map((row, index) => ({
+          ...link(index),
           taskName: row.taskName,
           projectId: row.projectId,
           priority: row.priority,
@@ -207,67 +247,62 @@ export class ReportContentService {
           plannedMinutes: row.plannedMinutes,
           actualMinutes: row.actualMinutes,
           deliverable: row.deliverable,
-        },
+        })),
       });
     }
 
-    for (const [index, row] of content.nextWeekTasks.entries()) {
-      await tx.nextWeekTask.create({
-        data: {
-          reportVersionId: targetVersionId,
-          position: index,
+    if (content.nextWeekTasks.length > 0) {
+      await tx.nextWeekTask.createMany({
+        data: content.nextWeekTasks.map((row, index) => ({
+          ...link(index),
           taskName: row.taskName,
           projectId: row.projectId,
           priority: row.priority,
-        },
+        })),
       });
     }
 
-    for (const [index, row] of content.blockers.entries()) {
-      await tx.blocker.create({
-        data: {
-          reportVersionId: targetVersionId,
-          position: index,
+    if (content.blockers.length > 0) {
+      await tx.blocker.createMany({
+        data: content.blockers.map((row, index) => ({
+          ...link(index),
           description: row.description,
           projectId: row.projectId,
           status: row.status,
           isKeyIssue: row.isKeyIssue,
-        },
+        })),
       });
     }
 
-    for (const [index, row] of content.achievements.entries()) {
-      await tx.achievement.create({
-        data: {
-          reportVersionId: targetVersionId,
-          position: index,
+    if (content.achievements.length > 0) {
+      await tx.achievement.createMany({
+        data: content.achievements.map((row, index) => ({
+          ...link(index),
           description: row.description,
           projectId: row.projectId,
           isKeyAchievement: row.isKeyAchievement,
-        },
+        })),
       });
     }
 
-    for (const [index, row] of content.timeEntries.entries()) {
-      await tx.timeEntry.create({
-        data: {
-          reportVersionId: targetVersionId,
-          position: index,
+    if (content.timeEntries.length > 0) {
+      await tx.timeEntry.createMany({
+        data: content.timeEntries.map((row, index) => ({
+          ...link(index),
           category: row.category,
           minutes: row.minutes,
           projectId: row.projectId,
-        },
+        })),
       });
     }
 
-    for (const [index, row] of content.links.entries()) {
-      await tx.reportLink.create({
-        data: {
-          reportVersionId: targetVersionId,
-          position: index,
+    if (content.links.length > 0) {
+      await tx.reportLink.createMany({
+        data: content.links.map((row, index) => ({
+          ...link(index),
           label: row.label,
           url: row.url,
-        },
+        })),
       });
     }
   }
@@ -295,6 +330,7 @@ export class ReportContentService {
     tx: Prisma.TransactionClient,
     versionId: string,
     content: ReportContentInput,
+    fresh: boolean,
   ): Promise<void> {
     const supplied = new Map<string, string[]>();
     for (const [section, model] of Object.entries(SECTION_TO_MODEL)) {
@@ -312,6 +348,12 @@ export class ReportContentService {
     for (const [model, ids] of supplied) {
       if (ids.length === 0) continue;
 
+      // A brand-new version owns no rows, so any supplied id is foreign by
+      // definition — no query needed to establish that.
+      if (fresh) {
+        throw ApiException.badRequest('A submitted row does not belong to this report version.');
+      }
+
       const found = await this.childDelegate(tx, model as ChildModel).findMany({
         where: { id: { in: ids }, reportVersionId: versionId },
         select: { id: true },
@@ -323,39 +365,54 @@ export class ReportContentService {
     }
   }
 
-  private async reconcile<TRow extends { id?: string }>(
+  private async reconcileWithFresh<TRow extends { id?: string }>(
     tx: Prisma.TransactionClient,
     versionId: string,
     model: ChildModel,
+    fresh: boolean,
     rows: TRow[],
     toData: (row: TRow) => Record<string, unknown>,
   ): Promise<void> {
     const delegate = this.childDelegate(tx, model);
     const keptIds = rows.map((row) => row.id).filter((id): id is string => typeof id === 'string');
 
-    // Rows the payload omitted are gone. Only from THIS editable version — the
-    // corresponding row in an earlier submitted version is untouched (§13.7).
-    await delegate.deleteMany({
-      where: { reportVersionId: versionId, ...(keptIds.length ? { id: { notIn: keptIds } } : {}) },
-    });
-
-    if (keptIds.length > 0) {
-      // Phase one: move survivors out of the way of the final numbering.
-      await delegate.updateMany({
-        where: { reportVersionId: versionId },
-        data: { position: { increment: POSITION_OFFSET } },
+    if (!fresh) {
+      // Rows the payload omitted are gone. Only from THIS editable version — the
+      // corresponding row in an earlier submitted version is untouched (§13.7).
+      await delegate.deleteMany({
+        where: {
+          reportVersionId: versionId,
+          ...(keptIds.length ? { id: { notIn: keptIds } } : {}),
+        },
       });
+
+      if (keptIds.length > 0) {
+        // Phase one: move survivors out of the way of the final numbering.
+        await delegate.updateMany({
+          where: { reportVersionId: versionId },
+          data: { position: { increment: POSITION_OFFSET } },
+        });
+      }
     }
 
-    // Phase two: array order is the position (§15.5).
+    // Phase two: array order is the position (§15.5). Updates go one by one
+    // because each row carries different values; inserts are batched into a
+    // single statement, which is what keeps a large report inside the
+    // transaction budget.
+    const inserts: Record<string, unknown>[] = [];
+
     for (const [index, row] of rows.entries()) {
       const data = { ...toData(row), position: index };
 
       if (row.id) {
         await delegate.update({ where: { id: row.id }, data });
       } else {
-        await delegate.create({ data: { ...data, reportVersionId: versionId } });
+        inserts.push({ ...data, reportVersionId: versionId });
       }
+    }
+
+    if (inserts.length > 0) {
+      await delegate.createMany({ data: inserts });
     }
   }
 
@@ -373,6 +430,7 @@ export class ReportContentService {
     updateMany: (args: unknown) => Promise<unknown>;
     update: (args: unknown) => Promise<unknown>;
     create: (args: unknown) => Promise<unknown>;
+    createMany: (args: unknown) => Promise<unknown>;
   } {
     return tx[model] as unknown as ReturnType<ReportContentService['childDelegate']>;
   }

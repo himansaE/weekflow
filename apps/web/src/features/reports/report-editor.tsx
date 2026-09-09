@@ -7,14 +7,15 @@ import { FormProvider, useForm } from 'react-hook-form';
 import { draftContentSchema, REPORT_SECTIONS, emptyReportContent } from '@weekflow/shared';
 import type { EligibleProject, ReportContentInput, ReportView } from '@weekflow/shared';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toApiFailure } from '@/lib/api-client';
 import { listEligibleProjects } from '@/features/admin/api';
 import { useUnsavedChangesWarning } from '@/hooks/use-unsaved-changes';
-import { createReport, fetchWeeklyContext, saveDraft } from './api';
+import { createReport, fetchWeeklyContext, saveDraft, submitReport } from './api';
+import { CorrectionBanner } from './correction-banner';
+import { SubmitConfirmDialog } from './submit-confirm-dialog';
 import { TasksSection } from './sections/tasks-section';
 import { NextWeekTasksSection } from './sections/next-week-tasks-section';
 import { BlockersSection } from './sections/blockers-section';
@@ -38,6 +39,7 @@ export function ReportEditor({ weekStart }: { weekStart?: string }) {
   const queryClient = useQueryClient();
   const [saveError, setSaveError] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const formTopRef = useRef<HTMLDivElement>(null);
 
   const contextQuery = useQuery({
@@ -114,6 +116,52 @@ export function ReportEditor({ weekStart }: { weekStart?: string }) {
     },
   });
 
+  /**
+   * Submit and resubmit send the content currently on screen, so nothing the
+   * member can see is left behind (§15.6). Validation is strict here, unlike the
+   * draft path — the server applies the same rule and its field errors are mapped
+   * back onto the form.
+   */
+  const submit = useMutation({
+    mutationFn: async (content: ReportContentInput): Promise<ReportView> => {
+      if (!context) throw new Error('No editor context loaded.');
+
+      if (!report) {
+        // Create-and-submit in one transaction — no artificial Save Draft first.
+        return createReport({ weekStart: context.weekStart, content, submit: true });
+      }
+
+      return submitReport(
+        report.id,
+        {
+          expectedRevision: report.revision,
+          expectedVersionId: report.editableVersionId ?? report.displayVersion.id,
+          content,
+        },
+        { resubmit: report.status === 'NEEDS_CORRECTION' },
+      );
+    },
+    onMutate: () => setSaveError(null),
+    onSuccess: (saved) => {
+      setConfirmingSubmit(false);
+      resetTo(saved.displayVersion.content as ReportContentInput);
+      void queryClient.invalidateQueries({ queryKey: ['report-context'] });
+      void queryClient.invalidateQueries({ queryKey: ['my-reports'] });
+    },
+    onError: (error) => {
+      setConfirmingSubmit(false);
+      const failure = toApiFailure(error);
+      setSaveError(failure.message);
+
+      failure.fieldErrors?.forEach((fieldError) => {
+        const path = fieldError.path.replace(/^content\./, '');
+        form.setError(path as never, { message: fieldError.message });
+      });
+
+      formTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    },
+  });
+
   if (contextQuery.isLoading || !context) {
     return (
       <div className="mx-auto max-w-5xl space-y-4">
@@ -125,6 +173,7 @@ export function ReportEditor({ weekStart }: { weekStart?: string }) {
 
   const projects: EligibleProject[] = projectsQuery.data ?? [];
   const readOnly = !context.allowedActions.includes('SAVE_DRAFT');
+  const isCorrection = report?.status === 'NEEDS_CORRECTION';
 
   return (
     <FormProvider {...form}>
@@ -147,6 +196,8 @@ export function ReportEditor({ weekStart }: { weekStart?: string }) {
             {report && ` · version ${report.displayVersion.versionNumber}`}
           </p>
         </header>
+
+        {report?.status === 'NEEDS_CORRECTION' && <CorrectionBanner report={report} />}
 
         {projects.length === 0 && !projectsQuery.isLoading && (
           <Alert>
@@ -189,8 +240,16 @@ export function ReportEditor({ weekStart }: { weekStart?: string }) {
 
           {!readOnly && (
             <div className="sticky bottom-0 -mx-4 flex flex-wrap items-center gap-3 border-t bg-background/95 px-4 py-3 backdrop-blur lg:-mx-8 lg:px-8">
-              <Button type="submit" disabled={save.isPending}>
+              <Button type="submit" variant="outline" disabled={save.isPending}>
                 {save.isPending ? 'Saving…' : 'Save draft'}
+              </Button>
+
+              <Button
+                type="button"
+                disabled={save.isPending || submit.isPending}
+                onClick={() => setConfirmingSubmit(true)}
+              >
+                {isCorrection ? 'Resubmit' : 'Submit report'}
               </Button>
 
               <p className="text-xs text-muted-foreground" aria-live="polite">
@@ -200,13 +259,20 @@ export function ReportEditor({ weekStart }: { weekStart?: string }) {
                     ? `Saved at ${lastSavedAt.toLocaleTimeString()}`
                     : 'No changes yet'}
               </p>
-
-              <Badge variant="outline" className="ml-auto">
-                Submitting arrives in M6
-              </Badge>
             </div>
           )}
         </form>
+
+        {/* States the consequence before it happens: the submitted version becomes
+            read-only, and only a manager requesting changes reopens the work —
+            into a NEW version (§7.5). */}
+        <SubmitConfirmDialog
+          open={confirmingSubmit}
+          isResubmit={isCorrection}
+          pending={submit.isPending}
+          onCancel={() => setConfirmingSubmit(false)}
+          onConfirm={() => void form.handleSubmit((values) => submit.mutate(values))()}
+        />
       </div>
     </FormProvider>
   );

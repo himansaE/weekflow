@@ -124,7 +124,7 @@ removed. See [`docs/derived-register.md`](docs/derived-register.md) §12.3.
 | Authentication, RBAC, CSRF/origin policy                    | Implemented (M3)  |
 | User and project administration                             | Implemented (M4)  |
 | Weekly report editor and drafts                             | Implemented (M5)  |
-| Submission, review and versioning                           | Not started (M6)  |
+| Submission, review and versioning                           | Implemented (M6)  |
 | Report pages and operational lists                          | Not started (M7)  |
 | Dashboards and analytics                                    | Not started (M8)  |
 | Demo seed data and full regression suite                    | Not started (M9)  |

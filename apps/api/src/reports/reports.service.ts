@@ -1,9 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { ApiErrorCode, ReportAction, ReportStatus } from '@weekflow/shared';
+import { ApiErrorCode, ReportAction, ReportStatus, Role } from '@weekflow/shared';
 import type {
   ApiList,
   ReportContentInput,
   ReportListItem,
+  ReportVersionSummary,
+  ReportVersionView,
   ReportView,
   SafeUser,
   WeekStart,
@@ -14,9 +16,11 @@ import { AuditService } from '../audit/audit.service';
 import { CalendarService } from '../calendar/calendar.service';
 import { ApiException } from '../common/errors/api.exception';
 import { paginationMeta } from '../common/dto/pagination.dto';
+import { TRANSACTION_OPTIONS } from '../common/transaction-options';
 import { EligibilityService } from '../projects/eligibility.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReportContentService } from './report-content.service';
+import { ReportWorkflowService } from './report-workflow.service';
 import type { Prisma, Report, ReportVersion } from '../generated/prisma/client';
 
 type ReportWithOwner = Report & { user: { id: string; fullName: string; email: string } };
@@ -36,6 +40,7 @@ export class ReportsService {
     private readonly calendar: CalendarService,
     private readonly eligibility: EligibilityService,
     private readonly content: ReportContentService,
+    private readonly workflow: ReportWorkflowService,
     private readonly audit: AuditService,
   ) {}
 
@@ -45,7 +50,7 @@ export class ReportsService {
     weekStart: WeekStart,
     asOf: Date = new Date(),
   ): Promise<{ data: WeeklyReportContext; context: { asOf: string; timezone: string } }> {
-    this.assertWeekIsOpenForReporting(actor, weekStart, asOf);
+    this.assertWeekIsOpenForReporting(weekStart, asOf);
 
     const report = await this.prisma.report.findUnique({
       where: { userId_weekStart: { userId: actor.id, weekStart: new Date(weekStart) } },
@@ -80,25 +85,32 @@ export class ReportsService {
    * First persistence: creates the Report, version 1, its content and the
    * pointers in one transaction (§16.1).
    *
-   * The circular relationship between Report and ReportVersion is resolved
-   * inside the transaction — insert the report with null pointers, insert V1,
-   * then set them — so no successful response ever exposes a null current
-   * version (§13.4).
+   * With `submit: true` the same transaction also freezes the version and
+   * records the submission, so a member who fills the form and presses Submit
+   * never needs an artificial Save Draft first, and the two steps are not
+   * separately observable (D115).
    */
   async create(
     actor: SafeUser,
-    input: { weekStart: WeekStart; content: ReportContentInput },
+    input: { weekStart: WeekStart; content: ReportContentInput; submit: boolean },
     asOf: Date = new Date(),
   ): Promise<ReportView> {
-    this.assertWeekIsOpenForReporting(actor, input.weekStart, asOf);
+    this.assertWeekIsOpenForReporting(input.weekStart, asOf);
+
+    const content = input.submit
+      ? ReportWorkflowService.assertSubmittable(input.content)
+      : input.content;
+
     await this.eligibility.assertProjectsEligible(
       actor.id,
       input.weekStart,
-      ReportContentService.referencedProjectIds(input.content),
+      ReportContentService.referencedProjectIds(content),
     );
 
     const reportId = await this.prisma
       .$transaction(async (tx) => {
+        const now = new Date();
+
         const report = await tx.report.create({
           data: {
             userId: actor.id,
@@ -115,7 +127,8 @@ export class ReportsService {
           data: { reportId: report.id, versionNumber: 1 },
         });
 
-        await this.content.replace(tx, version.id, input.content);
+        // The version was created a statement ago, so it owns no rows.
+        await this.content.replace(tx, version.id, content, { fresh: true });
 
         await tx.report.update({
           where: { id: report.id },
@@ -130,13 +143,17 @@ export class ReportsService {
             entityId: report.id,
             reportId: report.id,
             reportVersionId: version.id,
-            metadata: { weekStart: input.weekStart },
+            metadata: { weekStart: input.weekStart, submitted: input.submit },
           },
           tx,
         );
 
+        if (input.submit) {
+          await this.workflow.createAndSubmit(actor, report.id, version.id, tx, now);
+        }
+
         return report.id;
-      })
+      }, TRANSACTION_OPTIONS)
       .catch((error: unknown) => {
         // The unique index on (userId, weekStart) is what actually prevents a
         // duplicate — two concurrent first saves both pass any prior read (§16.2).
@@ -213,7 +230,7 @@ export class ReportsService {
         },
         tx,
       );
-    });
+    }, TRANSACTION_OPTIONS);
 
     return this.findByIdForActor(reportId, actor, asOf);
   }
@@ -284,13 +301,78 @@ export class ReportsService {
       include: { user: true },
     });
 
-    // A report belonging to someone else is indistinguishable from one that does
-    // not exist (§3.2). Manager visibility of submitted versions arrives in M6.
-    if (!report || report.userId !== actor.id) {
-      throw ApiException.notFound('Report not found.');
-    }
+    if (!report) throw ApiException.notFound('Report not found.');
+    this.assertVisible(report, actor);
 
     return this.toReportView(report, actor, asOf);
+  }
+
+  /**
+   * Version list.
+   *
+   * A manager never sees the unfinished correction draft: until the member
+   * resubmits, the only versions that exist for them are the submitted ones
+   * (§7.4).
+   */
+  async listVersions(reportId: string, actor: SafeUser): Promise<ReportVersionSummary[]> {
+    const report = await this.prisma.report.findUniqueOrThrow({ where: { id: reportId } });
+    this.assertVisible(report, actor);
+
+    const isOwner = report.userId === actor.id;
+
+    const versions = await this.prisma.reportVersion.findMany({
+      where: { reportId, ...(isOwner ? {} : { submittedAt: { not: null } }) },
+      orderBy: { versionNumber: 'asc' },
+    });
+
+    return versions.map((version) => ({
+      id: version.id,
+      versionNumber: version.versionNumber,
+      submittedAt: version.submittedAt?.toISOString() ?? null,
+    }));
+  }
+
+  async getVersion(
+    reportId: string,
+    versionId: string,
+    actor: SafeUser,
+  ): Promise<ReportVersionView> {
+    const report = await this.prisma.report.findUniqueOrThrow({ where: { id: reportId } });
+    this.assertVisible(report, actor);
+
+    const version = await this.prisma.reportVersion.findUnique({ where: { id: versionId } });
+    // Same-report check: a version id from another report must not be readable
+    // through this route (§15.6).
+    if (!version || version.reportId !== reportId) {
+      throw ApiException.notFound('Version not found.');
+    }
+
+    const isOwner = report.userId === actor.id;
+    if (!isOwner && version.submittedAt === null) {
+      throw ApiException.notFound('Version not found.');
+    }
+
+    return {
+      id: version.id,
+      versionNumber: version.versionNumber,
+      submittedAt: version.submittedAt?.toISOString() ?? null,
+      content: await this.content.load(this.prisma, version.id),
+    };
+  }
+
+  /**
+   * Visibility (§7.4).
+   *
+   * An owner always sees their own report. A manager sees it only once something
+   * has been submitted — an initial draft is private, so it is a 404 rather than
+   * a 403: even its existence is the member's business.
+   */
+  private assertVisible(report: Report, actor: SafeUser): void {
+    if (report.userId === actor.id) return;
+
+    if (actor.role === Role.MANAGER && report.latestSubmittedVersionId !== null) return;
+
+    throw ApiException.notFound('Report not found.');
   }
 
   private async toReportView(
@@ -299,11 +381,15 @@ export class ReportsService {
     asOf: Date,
   ): Promise<ReportView> {
     const weekStart = ReportsService.toWeekStart(report.weekStart);
+    const isOwner = report.userId === actor.id;
 
-    const displayVersionId = report.currentVersionId;
+    // The owner sees the version they are working on; a manager sees the latest
+    // submitted one, so a correction in progress stays private (§7.4).
+    const displayVersionId = isOwner ? report.currentVersionId : report.latestSubmittedVersionId;
     if (!displayVersionId) {
-      // Unreachable: the create transaction always sets the pointer (§13.4).
-      throw new Error(`Report ${report.id} has no current version.`);
+      // Unreachable: the create transaction always sets currentVersionId, and a
+      // manager without latestSubmittedVersionId was already refused (§13.4).
+      throw new Error(`Report ${report.id} has no visible version.`);
     }
 
     const version = await this.prisma.reportVersion.findUniqueOrThrow({
@@ -311,8 +397,11 @@ export class ReportsService {
     });
     const content = await this.content.load(this.prisma, displayVersionId);
 
-    const isOwner = report.userId === actor.id;
-    const editable = version.submittedAt === null ? version.id : null;
+    const latestSubmitted = report.latestSubmittedVersionId
+      ? await this.prisma.reportVersion.findUnique({
+          where: { id: report.latestSubmittedVersionId },
+        })
+      : null;
 
     return {
       id: report.id,
@@ -333,7 +422,7 @@ export class ReportsService {
         asOf,
       }),
       firstSubmittedAt: report.firstSubmittedAt?.toISOString() ?? null,
-      latestSubmittedAt: null,
+      latestSubmittedAt: latestSubmitted?.submittedAt?.toISOString() ?? null,
       revision: report.revision,
       displayVersion: {
         id: version.id,
@@ -341,27 +430,39 @@ export class ReportsService {
         submittedAt: version.submittedAt?.toISOString() ?? null,
         content,
       },
-      editableVersionId: isOwner ? editable : null,
-      allowedActions: ReportsService.allowedActions(report.status, isOwner),
+      editableVersionId: isOwner && version.submittedAt === null ? version.id : null,
+      allowedActions: ReportsService.allowedActions(report.status, isOwner, actor.role),
     };
   }
 
   /**
    * What the actor may do next, computed server-side so the UI cannot offer an
-   * action the API would refuse (§15.6). Submit/resubmit are wired in M6.
+   * action the API would refuse (§15.6).
    */
-  private static allowedActions(status: ReportStatus, isOwner: boolean): ReportAction[] {
-    if (!isOwner) return [];
-
-    switch (status) {
-      case ReportStatus.DRAFT:
-        return [ReportAction.SAVE_DRAFT, ReportAction.SUBMIT];
-      case ReportStatus.NEEDS_CORRECTION:
-        return [ReportAction.SAVE_DRAFT, ReportAction.RESUBMIT];
-      // Submitted and approved content is read-only for everyone (§7.1).
-      default:
-        return [];
+  private static allowedActions(
+    status: ReportStatus,
+    isOwner: boolean,
+    role: SafeUser['role'],
+  ): ReportAction[] {
+    if (isOwner) {
+      switch (status) {
+        case ReportStatus.DRAFT:
+          return [ReportAction.SAVE_DRAFT, ReportAction.SUBMIT];
+        case ReportStatus.NEEDS_CORRECTION:
+          return [ReportAction.SAVE_DRAFT, ReportAction.RESUBMIT];
+        // Submitted and approved content is read-only for its owner too (§7.1).
+        default:
+          return [];
+      }
     }
+
+    // A manager can act only on a report awaiting review. Approved is terminal —
+    // there is no reopen path anywhere in the product (§7.1).
+    if (role === Role.MANAGER && status === ReportStatus.SUBMITTED) {
+      return [ReportAction.APPROVE, ReportAction.REQUEST_CHANGES];
+    }
+
+    return [];
   }
 
   private async loadOwned(reportId: string, actor: SafeUser): Promise<Report> {
@@ -397,7 +498,7 @@ export class ReportsService {
    * and its real timestamps make it correctly late. Future weeks are not: there
    * is nothing to report yet, and allowing it would let a member pre-submit.
    */
-  private assertWeekIsOpenForReporting(actor: SafeUser, weekStart: WeekStart, asOf: Date): void {
+  private assertWeekIsOpenForReporting(weekStart: WeekStart, asOf: Date): void {
     const current = this.calendar.currentWeekStart(asOf);
     if (weekStart > current) {
       throw ApiException.badRequest('You cannot create a report for a future week.', [
