@@ -1,6 +1,16 @@
-import { IsBoolean, IsInt, IsObject, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { Type } from 'class-transformer';
-import { draftContentSchema } from '@weekflow/shared';
+import { draftContentSchema, LIMITS, REVIEW_ACTION_VALUES, ReviewAction } from '@weekflow/shared';
 import type { ReportContentInput } from '@weekflow/shared';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto';
 import { ApiException } from '../../common/errors/api.exception';
@@ -50,6 +60,45 @@ export class SaveDraftDto {
 }
 
 export class ReportListQueryDto extends PaginationQueryDto {}
+
+/** Submit and resubmit carry the current form content, so what is on screen is
+ * what gets submitted — never a stale saved draft (§15.6). */
+export class SubmitReportDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  expectedRevision!: number;
+
+  @IsUUID()
+  expectedVersionId!: string;
+
+  @IsObject()
+  content!: unknown;
+}
+
+export class ReviewDto {
+  /**
+   * The exact version being judged. Required rather than implied: between loading
+   * the review page and acting, another manager may already have reviewed, and a
+   * decision must never land on a different version (§7.5).
+   */
+  @IsUUID()
+  reportVersionId!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  expectedRevision!: number;
+
+  @IsEnum(REVIEW_ACTION_VALUES.reduce<Record<string, string>>((acc, a) => ({ ...acc, [a]: a }), {}))
+  action!: ReviewAction;
+
+  /** Required and non-blank for REQUEST_CHANGES; checked in the service (§7.5). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(LIMITS.review.requestChangesComment.max)
+  comment?: string | null;
+}
 
 /**
  * Parses the aggregate with the draft profile, mapping Zod issues onto the
